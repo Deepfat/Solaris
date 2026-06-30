@@ -54,6 +54,21 @@ def run_scheduler(mode: str, mqtt_timeout: int = 30) -> int:
             logger.warning(f"MQTT connection failed: {mqtt_err}. Proceeding with cached data.")
             # Continue anyway — cache may have data from previous run
         
+        # Check cache freshness (default max age: 5 minutes)
+        MAX_CACHE_AGE = 300  # seconds
+        is_fresh, max_age, min_age, metrics_checked = cache.check_freshness(MAX_CACHE_AGE)
+        
+        if not is_fresh:
+            msg = f"Cache stale: {max_age}s old (max {MAX_CACHE_AGE}s)"
+            logger.warning(msg)
+            writer.log_freshness("STALE", max_age=max_age, min_age=min_age, metrics_checked=metrics_checked, message=msg)
+            logger.info(f"{mode} task skipped (stale data)")
+            return 0
+        
+        # Cache is fresh - proceed with writes
+        writer.log_freshness("FRESH", max_age=max_age, min_age=min_age, metrics_checked=metrics_checked, 
+                           message=f"Cache fresh: {max_age}s old")
+        
         # Write to database based on mode
         if mode == "1min":
             logger.info("Writing 1-minute summary...")

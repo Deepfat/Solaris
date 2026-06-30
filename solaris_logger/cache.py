@@ -40,3 +40,31 @@ class TelemetryCache:
     def summary_daily(self):
         with self._lock:
             return {k: v for k, (v, _) in self._data.items()}
+
+    def check_freshness(self, max_age_seconds=300):
+        """
+        Check if cache data is recent enough to write to DB.
+        
+        Args:
+            max_age_seconds: Maximum acceptable age of oldest metric (default 5 min)
+        
+        Returns:
+            (is_fresh: bool, max_age: int, min_age: int, metrics_checked: int)
+        """
+        now = time.time()
+        with self._lock:
+            ages = []
+            for metric, (value, ts) in self._data.items():
+                if ts is not None:
+                    age = now - ts
+                    ages.append(age)
+        
+        if not ages:
+            return False, None, None, len(self._data)
+        
+        max_age = max(ages)
+        min_age = min(ages)
+        is_fresh = max_age <= max_age_seconds
+        
+        return is_fresh, int(max_age), int(min_age), len(ages)
+
