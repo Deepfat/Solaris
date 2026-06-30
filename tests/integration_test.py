@@ -227,12 +227,12 @@ def test_mqtt_to_cache_to_db(setup_test_tables):
     for attempt in range(1, max_retries + 1):
         try:
             mqtt.start()
-            print(f"✓ MQTT broker connected (attempt {attempt}/{max_retries})")
+            print(f"[OK] MQTT broker connected (attempt {attempt}/{max_retries})")
             mqtt_connected = True
             break
         except Exception as e:
             if attempt < max_retries:
-                print(f"⚠ MQTT connection failed (attempt {attempt}/{max_retries}), retrying in {retry_delay}s...")
+                print(f"[RETRY] MQTT connection failed (attempt {attempt}/{max_retries}), retrying in {retry_delay}s...")
                 time.sleep(retry_delay)
             else:
                 # All retries exhausted - fail the test
@@ -240,8 +240,16 @@ def test_mqtt_to_cache_to_db(setup_test_tables):
                 raise AssertionError(f"MQTT broker unavailable after {max_retries} attempts: {e}")
     
     try:
-        # Wait a moment for any initial messages
-        time.sleep(2)
+        # Wait for MQTT messages to arrive (longer wait = more messages = fresh data)
+        time.sleep(5)
+        
+        # Debug: print what's in cache after MQTT connection
+        cache_snapshot = cache.summary_1min()
+        non_none_metrics = {k: v for k, v in cache_snapshot.items() if v[0] is not None}
+        print(f"[INFO] Cache snapshot after 5s MQTT wait:")
+        print(f"       Non-None metrics: {len(non_none_metrics)}/{len(cache_snapshot)}")
+        for k, (v, ts) in non_none_metrics.items():
+            print(f"       - {k}: {v}")
         
         # Check cache freshness
         is_fresh, max_age, min_age, metrics_checked = cache.check_freshness(max_age_seconds=300)
@@ -259,7 +267,7 @@ def test_mqtt_to_cache_to_db(setup_test_tables):
         
         # Only write if cache is fresh
         if not is_fresh:
-            print(f"⚠ MQTT test: cache is stale ({max_age}s old), skipping writes")
+            print(f"[WARN] MQTT test: cache is stale ({max_age}s old), skipping writes")
         else:
             # Write whatever is in cache to database
             writer.write_1min(cache)
@@ -272,7 +280,7 @@ def test_mqtt_to_cache_to_db(setup_test_tables):
             cursor = conn.cursor()
             cursor.execute(f"SELECT COUNT(*) FROM dbo.{TEST_TABLES['min1']}")
             count = cursor.fetchone()[0]
-            print(f"✓ MQTT test: {count} rows written from fresh cache")
+            print(f"[OK] MQTT test: {count} rows written from fresh cache")
             conn.close()
         
     finally:
