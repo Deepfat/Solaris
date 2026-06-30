@@ -1,4 +1,20 @@
+# Core telemetry pipeline
 paho-mqtt
 python-dotenv
 pyodbc
+
+# Database and data processing
+sqlalchemy
+pandas
+
+# Dashboard and visualization
+dash
+dash-bootstrap-components
+plotly
+
+# CLI and formatting
+tqdm
+rich
+
+# Testing
 pytest

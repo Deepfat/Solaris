@@ -142,3 +142,30 @@ BEGIN
     WHERE summary_date = @target_date;
 END;
 GO
+
+------------------------------------------------------------
+-- INVERTER STATE CHANGES TABLE (change tracking only)
+------------------------------------------------------------
+CREATE TABLE dbo.inverter_state_changes (
+    id INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+    timestamp DATETIME2(0) NOT NULL,
+    state_key NVARCHAR(64) NOT NULL,
+    state_value NVARCHAR(255) NOT NULL
+);
+GO
+
+CREATE INDEX IX_inverter_state_changes_timestamp ON dbo.inverter_state_changes (timestamp);
+CREATE INDEX IX_inverter_state_changes_key ON dbo.inverter_state_changes (state_key, timestamp DESC);
+GO
+
+------------------------------------------------------------
+-- PRUNE PROCEDURE: INVERTER STATE CHANGES (keep 2 years)
+------------------------------------------------------------
+CREATE PROCEDURE dbo.prune_inverter_state_changes
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DELETE FROM dbo.inverter_state_changes
+    WHERE timestamp < DATEADD(year, -2, SYSUTCDATETIME());
+END;
+GO
