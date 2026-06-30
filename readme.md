@@ -1,148 +1,101 @@
-# ☀️ Solaris
+# Solaris
 
-A compact telemetry pipeline for capturing GivEnergy inverter data from **Home Assistant** and storing it in **SQL Server** for long‑term analysis.  
-Home Assistant provides the inverter interface (GivTCP3) and publishes telemetry via the **Mosquitto MQTT** broker.  
-`solaris_logger` subscribes to those topics, maintains a thread‑safe in‑memory state, and writes periodic snapshots and daily summaries.
+Telemetry pipeline: GivEnergy inverter → Home Assistant → MQTT → Python → SQL Server.
+
+Captures inverter state from Mosquitto MQTT broker, maintains in-memory cache, writes snapshots and state changes to SQL Server.
 
 
-## 🕒 How Solaris Handles Incoming Data
-
-Solaris processes two independent data streams:
-
-### **1. 15‑Minute State Snapshots**
-- Home Assistant publishes live inverter telemetry continuously  
-- Solaris stores **only the latest values** in the in‑memory cache  
-- Every 15 minutes, the reducer writes a **15‑minute snapshot** to SQL Server  
-
-### **2. Daily Summary Counters**
-- The inverter publishes cumulative daily totals (PV energy, grid import/export, etc.)  
-- These values **increase throughout the day** and **reset at midnight**  
-- Solaris stores **only the latest cumulative value for the current day** in the cache  
-- Every night the reducer writes the **daily summary data** to SQL Server 
-
----
-
-## 🧱 Architecture Overview
+## Architecture
 
 ```
-Home Assistant
- ├─ GivTCP3 (inverter interface)
- └─ Mosquitto MQTT (telemetry broker)
+GivEnergy Inverter → Home Assistant → MQTT Broker (Mosquitto)
+                                           ↓
+                        solaris_logger (Python pipeline)
+                        ├─ MQTTBroker (subscribe, parse)
+                        ├─ TelemetryCache (thread-safe state)
+                        └─ DBWriter (write snapshots)
+                                           ↓
+                        SQL Server (solar database)
 ```
 
-the `solaris_logger` package consists of three components:
+### Components
 
-### **1. MQTT Ingestion**
-- Subscribes to GivEnergy telemetry topics  
-- Parses and normalises values  
-- Updates the shared cache under a lock  
+| Component | Purpose |
+|-----------|---------|
+| **MQTTBroker** | Subscribes to GivEnergy topics, parses JSON, updates cache |
+| **TelemetryCache** | Thread-safe in-memory state (kW, SOC, cumulative energy, inverter state) |
+| **DBWriter** | Reads cache, writes to SQL Server tables |
 
-### **2. Thread‑Safe Cache**
-- Holds the latest inverter state (PV, grid, battery, load, SOC, counters)  
-- Provides atomic `update()` and consistent `snapshot()`  
+### Data Flow
 
-### **3. SQL Writer**
-- Reads the cache
-- Has 3 entry points to store data to SQL Express solar DB in 3 tables:
--- 1‑minute snapshots -> summary_1min
--- 15‑minute snapshots-> summary_15min
--- daily summaries-> summary_daily
-- Prunes the tables so that 
--- summary_1min has data for the last 7 days
--- summary_15min has data for the last 6 months
-### **4. Windows scheduler**
-- 1 min schedule
-- 15 min schedule
-- daily schedule
+1. **Numeric metrics** (power, SOC, energy): `cache → summary_1min, summary_15min, summary_daily`
+2. **State changes** (inverter_state, battery_mode): `cache → inverter_state_changes` (on change only)
 
----
+### Tables
 
-## 🔄 Data Flow
+| Table | Interval | Retention | Purpose |
+|-------|----------|-----------|---------|
+| `summary_1min` | 1 minute | 7 days | Instantaneous kW + cumulative kWh |
+| `summary_15min` | 15 minutes | 6 months | Aggregated readings |
+| `summary_daily` | Daily | Indefinite | Daily energy totals (upsert) |
+| `inverter_state_changes` | On change | 2 years | State transitions only (no duplicate writes) |
 
-```mermaid
+### Scheduler
 
-flowchart LR
+Trigger via Windows Task Scheduler or systemd cron:
+- **1-min task**: `write_1min()` + `write_state_changes()`
+- **15-min task**: `write_15min()`
+- **Daily task**: `write_daily()` + `prune_summary_1min()` + `prune_summary_15min()`
 
-    INV[GivEnergy Inverter]
-    HA[Home Assistant]
-    INGEST[MQTT Ingestion]
-    CACHE[In‑Memory Cache]
-    REDUCE[Reducer + DB Writer]
-    SQL[(SQL Server)]
-    SCHED[Scheduler]
 
-    subgraph PY[Python Pipeline]
-        INGEST
-        CACHE
-        REDUCE
-        SCHED
-    end
+## Setup
 
-    INV --> HA
-    HA --> INGEST
-    INGEST --> CACHE
-
-    SCHED --> REDUCE
-    CACHE --> REDUCE
-
-    REDUCE -->|15‑min snapshots| SQL
-    REDUCE -->|Daily summary upserts| SQL
+1. Create `.env`:
 ```
-
-## 📂 Package Layout
-
-```
-.env                  # connection to mqtt service ion HA green and SQL Express
-solaris_logger/
-    __init__.py
-    cache.py          # state store
-    mqtt_broker.py    # ingestion + parsing
-    db_writer.py      # SQL insert logic
-    scheduler.py      # timed reducers
-
-```
-
----
-
-## ✔ Summary
-
-`solaris_logger` provides:
-
-- MQTT ingestion from Home Assistant  
-- deterministic in‑memory state  
-- scheduled snapshot + daily reducers  
-- SQL Server storage  
-- a small, predictable, maintainable codebase
-
-# 📝 Notes
-
-## Environment Setup
-
-Solaris requires a `.env` file in the project root containing your MQTT, SQL Server, and GivEnergy settings. This file must not be committed to Git. The `.gitignore` already excludes it. Use the following structure:
-
-MQTT_HOST=...
-MQTT_PORT=...
-MQTT_TOPIC=...
-MQTT_USER=...
-MQTT_PASS=...
-
-GIVENERGY_INVERTER_SERIAL=...
+MQTT_HOST=<host>
+MQTT_PORT=1883
+MQTT_TOPIC=givenergy/#
+MQTT_USER=<user>
+MQTT_PASS=<pass>
 
 SQL_DRIVER=ODBC Driver 18 for SQL Server
-SQL_TRUST_CERT=yes
-
-SQL_SERVER=...
-SQL_USER=...
-SQL_PASS=...
-
+SQL_SERVER=<server>
+SQL_USER=<user>
+SQL_PASS=<pass>
 SQL_DATABASE=solar
-SQL_MASTER_DATABASE=master
+```
+
+2. Fresh database:
+```bash
+sqlcmd -S <server> -U <user> -P <pass> -i sql/create_solar_db_schema.sql
+```
+
+3. Existing database (apply migrations):
+```bash
+python sql/apply_migrations.py
+```
+
+4. Run integration tests:
+```bash
+pytest tests/integration_test.py -v
+```
+
+Test data appears in `itest_*` tables for inspection in SSMS.
 
 
-## Windows Scheduler (Optional)
+## Project Layout
 
-A PowerShell script is provided to install Solaris as a scheduled task on Windows. Run it from an elevated PowerShell prompt:
-
-powershell\create_SolarisScheduler.ps1
-
-This registers a Task Scheduler entry that runs the Solaris pipeline automatically at fixed intervals. You can adjust the schedule later via Task Scheduler under “Solaris”.
+```
+solaris_logger/
+    cache.py              # TelemetryCache
+    mqtt_broker.py        # MQTTBroker
+    db_writer.py          # DBWriter
+sql/
+    create_solar_db_schema.sql       # Fresh install
+    apply_migrations.py              # Migration runner
+    migrations/
+        001_add_inverter_state_changes.sql
+tests/
+    integration_test.py              # Cache → DB end-to-end
+.env                                 # Config (SQL + MQTT credentials)
+```
