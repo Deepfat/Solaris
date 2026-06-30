@@ -15,7 +15,9 @@ graph LR
     D -->|Read| E["💿 DBWriter<br/>Validate & Write"]
     E -->|SQL INSERT| F["📊 SQL Server<br/>solar database"]
     
-    F --> G["⏱️ summary_1min<br/>Numeric metrics"]
+    F --> G1["⏱️ summary_1min<br/>Every minute"]
+    F --> G2["📈 summary_15min<br/>Every 15 min"]
+    F --> G3["📅 summary_daily<br/>Daily aggregate"]
     F --> H["🔄 inverter_state_changes<br/>State transitions"]
     F --> I["🏥 data_freshness_log<br/>Staleness audit"]
     
@@ -62,15 +64,29 @@ Runs via Windows Task Scheduler (created by `powershell/create_SolarisScheduler.
 
 **Entry point**: `python -m solaris_logger.scheduler --mode 1min|15min|daily`
 
+**Setup Requirements:**
+⚠️ **Must run PowerShell as Administrator** to create scheduled tasks:
+```powershell
+# Run PowerShell as Admin, then:
+cd C:\Projects\Solaris
+powershell -ExecutionPolicy Bypass -File .\powershell\create_SolarisScheduler.ps1
+```
+If you get "Access is denied" error, you need Admin privileges. Right-click PowerShell → Run as Administrator.
+
 **Features:**
 - ✅ **Freshness check**: Validates MQTT data < 5 min old before write (prevents stale data DB pollution)
 - ✅ **Staleness logging**: Logs FRESH/STALE events to `data_freshness_log` table for auditing
 - ✅ **Graceful MQTT failures**: Retries 3x before skipping, doesn't crash scheduler
 
-**Tasks:**
-- **1-min**: `--mode 1min` → write_1min() + write_state_changes()
-- **15-min**: `--mode 15min` → write_15min()
-- **Daily**: `--mode daily` → write_daily() + prune old summary tables
+**Tasks Created:**
+- **Solar1Min**: `--mode 1min` → Every minute → write_1min() + write_state_changes()
+- **Solar15Min**: `--mode 15min` → Every 15 minutes → write_15min()
+- **SolarDaily**: `--mode daily` → Daily at 23:57 → write_daily() + prune old summary tables
+
+**Verify tasks created:**
+```powershell
+schtasks /Query | findstr Solar
+```
 
 
 ## ⚙️ Setup
